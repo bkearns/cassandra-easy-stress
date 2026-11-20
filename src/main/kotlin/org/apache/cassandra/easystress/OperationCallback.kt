@@ -47,7 +47,18 @@ class OperationCallback(
     ) {
         if (t != null) {
             context.metrics.errors.mark()
-            context.collect(op, Either.Right(Throwables.getRootCause(t)), startNanos, System.nanoTime())
+            // A failed operation is a completed operation and must land in the latency timer like
+            // any other. It used to be counted as an error and nothing else, so every percentile
+            // the console prints -- and that RateLimiterOptimizer acts on -- was computed over
+            // successes alone. The samples that dropped out were not random: a request that fails
+            // has usually waited longest (a timeout is the tail by definition, and a queue-full
+            // drop never ran at all), so the reported percentiles were biased low and hid exactly
+            // the regime an operator is trying to see. `createdAtNanos` is stamped when the
+            // operation is built, so this is the same queue-inclusive duration the success path
+            // records below.
+            val endNanos = System.nanoTime()
+            context.timer(op, populatePhase).update(endNanos - op.createdAtNanos, TimeUnit.NANOSECONDS)
+            context.collect(op, Either.Right(Throwables.getRootCause(t)), startNanos, endNanos)
             log.error { t }
             return
         }
